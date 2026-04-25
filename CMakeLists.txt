@@ -12,6 +12,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
 
 # Define the build type
 if(NOT CMAKE_BUILD_TYPE)
@@ -45,19 +49,23 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-    Application/can/can_protocal.c
-    Application/can/CAN_receive.c
-    Application/can/CAN_send.c
-    Application/Flag_State/Flag_State.c
-    Application/WS2812/WS2812.c
+    # Application/can/can_protocal.c
+    # Application/can/CAN_receive.c
+    # Application/can/CAN_send.c
+    # Application/Flag_State/Flag_State.c
+    # Application/WS2812/WS2812.c
+    module/start.cpp
+    # module/Fu.cpp
+    module/_can.cpp
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
-    Application/can
-    Application/Flag_State
-    Application/WS2812
+    # Application/can
+    # Application/Flag_State
+    # Application/WS2812
+    module/
 )
 
 # Add project symbols (macros)

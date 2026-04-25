@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2023 STMicroelectronics.
+  * Copyright (c) 2026 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -26,9 +26,7 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
-float usTms; //�����ʱ
-float ms_2500; //�����ʱ
-extern uint8_t ucSec; //���ʱ
+
 /* USER CODE END TD */
 
 /* Private define ------------------------------------------------------------*/
@@ -75,7 +73,7 @@ void NMI_Handler(void)
 
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-  while (1)
+   while (1)
   {
   }
   /* USER CODE END NonMaskableInt_IRQn 1 */
@@ -190,8 +188,7 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-  ms_2500++;
-	
+
   /* USER CODE END SysTick_IRQn 1 */
 }
 
@@ -240,7 +237,7 @@ void CAN1_RX1_IRQHandler(void)
   /* USER CODE END CAN1_RX1_IRQn 0 */
   HAL_CAN_IRQHandler(&hcan);
   /* USER CODE BEGIN CAN1_RX1_IRQn 1 */
-	
+
   /* USER CODE END CAN1_RX1_IRQn 1 */
 }
 
@@ -260,25 +257,5 @@ void EXTI9_5_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-	if(GPIO_Pin == K3_Pin)
-	{
-		if(HAL_GPIO_ReadPin(K3_GPIO_Port,K3_Pin) == RESET)
-		{
-		
-		
-		}
-		__HAL_GPIO_EXTI_CLEAR_IT(K3_Pin);
-	}
-	else if(GPIO_Pin == K4_Pin)
-	{
-		if(HAL_GPIO_ReadPin(K4_GPIO_Port,K4_Pin) == RESET)
-		{
-		
-		
-		}
-		__HAL_GPIO_EXTI_CLEAR_IT(K4_Pin);
-	}
-}
+
 /* USER CODE END 1 */
