@@ -59,7 +59,7 @@ public:
     CanBox() = default;
     CanBox(uint32_t stdId);
     CanBox(uint32_t stdId, uint32_t txStdId);
-    // void CanInit(uint32_t stdId);
+    void CanInit();
 
     /**
      * @brief 发送默认数据（使用内部 TxData）
@@ -72,7 +72,7 @@ public:
     /**
      * @brief 发送指定数据缓冲
      * @param stdId 标准帧 ID
-     * @param txdata 指向要发送的数据（长度由 len 指定）
+     * @param txdata 指向要发送的数据
      * @param len 数据长度（最大 8）
      * @return true 发送成功加入邮箱，false 失败
      */
@@ -80,14 +80,14 @@ public:
 
     /**
      * @brief 发送指定数据缓冲
-     * @param txdata 指向要发送的数据（长度由 len 指定）
+     * @param txdata 指向要发送的数据
      * @param len 数据长度（最大 8）
      * @return true 发送成功加入邮箱，false 失败
      */
     bool Send(uint8_t *txdata ,uint8_t len = 0x08);
 
     /**
-     * @brief 发送指定数据缓冲
+     * @brief 发送TxData数据
      * @param len 数据长度（最大 8）
      * @return true 发送成功加入邮箱，false 失败
      */
