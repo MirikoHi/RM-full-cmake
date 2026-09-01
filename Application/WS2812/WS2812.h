@@ -1,7 +1,6 @@
 #ifndef _WS2812_H
 #define _WS2812_H
 
-
 #include "main.h"
 
 #define PIXEL_NUM_R  64
