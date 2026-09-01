@@ -41,6 +41,14 @@ void startup(void){
     canbox.CanInit();
     canbox.TxData[2] = BLUE; // color
     while(1){
+        /* 新一轮重置 */
+        canbox.TxData[0] = BOARD_READY; // controlState
+        canbox.TxData[1] = 0;           // hitEnable = 0
+        canbox.TxData[3] = 0;           // twinkleState = 0
+        for(int8_t j = 0; j < 5; j++){
+            while(!canbox.Send(0x101 + j,0x08)){};
+        }
+
         memset(success, 0, sizeof(success));
         memset(canbox.RxData[0], 0, sizeof(canbox.RxData[0]));
         memset(canbox.RxData[1], 0, sizeof(canbox.RxData[1]));
@@ -95,10 +103,7 @@ void startup(void){
                 for(int8_t j = 0; j < 5; j++){
                     while(!canbox.Send(board[j],0x08)){};
                 }
-                i = -1;
-                HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BCD);
-                srand(time.Seconds + time.Minutes);
-                std::random_shuffle(board, board + 5, Rand);
+                break; /* restart the whole round from the top of while(1) */
             }
 
             if(success[0] == true &&

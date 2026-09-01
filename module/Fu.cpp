@@ -1,5 +1,7 @@
 #include "Fu.h"
 #include "tim.h"
+#include <stdint.h>
+#include "stm32f1xx_hal.h"
 // #include <algorithm>
 
 // extern DMA_HandleTypeDef hdma_tim1_ch1;
