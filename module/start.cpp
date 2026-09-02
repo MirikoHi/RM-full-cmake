@@ -35,6 +35,18 @@
 /* 灯板点亮时间，单位毫秒 */
 #define TARGET_LIGHT_ON_MS 2500
 
+/* 小符模式全部命中闪烁后，全部熄灭保持的时间，单位毫秒 */
+#define SMALL_ROUND_OFF_MS 500
+
+/* 大符模式首次命中后刷新时间延长值，单位毫秒 */
+#define BIG_TARGET_HIT_EXTEND_MS 1000
+
+/* 全灭后点亮下一批灯板前的等待时间：需大于灯板一个主循环周期(约 20ms+) */
+#define BOARD_CLEAR_SETTLE_MS 100
+
+/* 等待所有灯板反馈“在线且未命中”的兜底超时，防止某块板离线导致卡死 */
+#define BOARD_CLEAR_CONFIRM_TIMEOUT_MS 500
+
 /* 小符灯板 CAN 订单帧 ID 基址，0x101 或 0x301 根据实际硬件选择 */
 #define SMALL_BOARD_ID_BASE 0x101
 
@@ -205,10 +217,22 @@ static void send_board_order(uint32_t board_id, uint8_t hit_enable)
 {
     canbox.TxData[0] = BOARD_READY; // 控制状态
     canbox.TxData[1] = hit_enable;  // 点亮或熄灭
-    canbox.TxData[2] = BLUE;        // 颜色
     canbox.TxData[3] = 0;           // 闪烁状态
 
     while (!canbox.Send(board_id, 0x08)) {}
+}
+
+/**
+ * @brief 向指定小符灯板发送“点亮”命令
+ *
+ * 连续发送两帧点亮命令（冗余），避免单帧丢失导致该板整轮不亮。
+ * 灯板收到重复点亮命令是幂等的：已处于点亮状态时会直接忽略。
+ * @param board_id 灯板 CAN 标准帧 ID
+ */
+static void send_board_light(uint32_t board_id)
+{
+    send_board_order(board_id, 1);
+    send_board_order(board_id, 1);
 }
 
 /**
@@ -216,10 +240,65 @@ static void send_board_order(uint32_t board_id, uint8_t hit_enable)
  */
 static void all_small_boards_off(void)
 {
+    /* 连续发送两轮熄灭命令，避免单帧丢失导致灯板残留击打状态 */
+    for (uint8_t round = 0; round < 2; round++)
+    {
+        for (uint8_t i = 0; i < 5; i++)
+        {
+            send_board_order(SMALL_BOARD_ID_BASE + i, 0);
+        }
+
+        /* 等待熄灭命令全部发送完成，避免后续点亮帧抢在前面 */
+        while (!__HAL_CAN_GET_FLAG(canbox.Can, CAN_FLAG_TME0) ||
+               !__HAL_CAN_GET_FLAG(canbox.Can, CAN_FLAG_TME1) ||
+               !__HAL_CAN_GET_FLAG(canbox.Can, CAN_FLAG_TME2)) {}
+    }
+}
+
+/**
+ * @brief 检查 5 块灯板是否都回报“在线且未命中”
+ * @retval true 全部回报在线且未命中；false 仍有板子未回报或仍上报命中
+ */
+static bool all_boards_report_clear(void)
+{
     for (uint8_t i = 0; i < 5; i++)
     {
-        send_board_order(SMALL_BOARD_ID_BASE + i, 0);
+        if (canbox.RxData[i][0] != BOARD_READY ||
+            canbox.RxData[i][1] != 0)
+        {
+            return false;
+        }
     }
+    return true;
+}
+
+/**
+ * @brief 清场 + 双层保险：
+ *        1) 熄灭命令发完后至少等待 BOARD_CLEAR_SETTLE_MS，
+ *           保证每块灯板都读到并执行过“熄灭”；
+ *        2) 再确认 5 块灯板反馈都已变成“在线且未命中”，
+ *           避免板子带着上一轮的命中状态进入新一轮。
+ * @retval true 等待期间检测到双击，调用方应交给外层切换模式
+ */
+static bool clear_all_boards_before_round(void)
+{
+    all_small_boards_off();
+
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < BOARD_CLEAR_CONFIRM_TIMEOUT_MS)
+    {
+        if (detect_double_click())
+        {
+            return true;
+        }
+        if (((HAL_GetTick() - start) >= BOARD_CLEAR_SETTLE_MS) &&
+            all_boards_report_clear())
+        {
+            break;
+        }
+        HAL_Delay(1);
+    }
+    return false;
 }
 
 /**
@@ -228,13 +307,10 @@ static void all_small_boards_off(void)
  */
 static bool run_small_target_once(void)
 {
-    /* 新一轮：全部灯板先熄灭 */
-    canbox.TxData[0] = BOARD_READY;
-    canbox.TxData[1] = 0;
-    canbox.TxData[3] = 0;
-    for (uint8_t j = 0; j < 5; j++)
+    /* 新一轮：熄灭全部灯板，等板子消化命令并确认全部未命中后再点亮 */
+    if (clear_all_boards_before_round())
     {
-        while (!canbox.Send(SMALL_BOARD_ID_BASE + j, 0x08)) {}
+        return true;
     }
 
     memset(success, 0, sizeof(success));
@@ -249,10 +325,7 @@ static bool run_small_target_once(void)
     for (uint8_t i = 0; i < 5; i++)
     {
         /* 点亮当前灯板 */
-        canbox.TxData[0] = BOARD_READY;
-        canbox.TxData[1] = 1;
-        canbox.TxData[3] = 0;
-        while (!canbox.Send(board[i], 0x08)) {}
+        send_board_light(board[i]);
 
         /* 等待命中或超时（约 2.5s），期间检测双击 */
         uint32_t start = HAL_GetTick();
@@ -275,11 +348,7 @@ static bool run_small_target_once(void)
         /* 超时未命中，熄灭全部灯板并重新开始一轮 */
         if (!success[i])
         {
-            canbox.TxData[1] = 0;
-            for (uint8_t j = 0; j < 5; j++)
-            {
-                while (!canbox.Send(board[j], 0x08)) {}
-            }
+            all_small_boards_off();
             return false;
         }
     }
@@ -297,6 +366,14 @@ static bool run_small_target_once(void)
     }
 
     canbox.TxData[2] = (canbox.TxData[2] == BLUE ? RED : BLUE);
+
+    /* 全部熄灭并保持一段时间，再进入下一轮 */
+    all_small_boards_off();
+    if (wait_ms_or_double_click(SMALL_ROUND_OFF_MS))
+    {
+        return true;
+    }
+
     return false;
 }
 
@@ -315,23 +392,71 @@ static bool run_big_target_once(void)
 
     uint32_t id1 = SMALL_BOARD_ID_BASE + first;
     uint32_t id2 = SMALL_BOARD_ID_BASE + second;
+    uint8_t idx1 = first;
+    uint8_t idx2 = second;
 
-    /* 先熄灭上一轮可能残留的灯板 */
-    all_small_boards_off();
-
-    /* 随机点亮两个灯板 */
-    send_board_order(id1, 1);
-    send_board_order(id2, 1);
-
-    /* 持续点亮 2.5s，期间双击则提前退出并交给外层切换模式 */
-    if (wait_ms_or_double_click(TARGET_LIGHT_ON_MS))
+    /* 先熄灭上一轮可能残留的灯板，并确认清场完成后再点亮 */
+    if (clear_all_boards_before_round())
     {
         return true;
     }
 
-    /* 时间到，熄灭本次点亮的两个灯板 */
-    send_board_order(id1, 0);
-    send_board_order(id2, 0);
+    /* 清空上一周期的命中反馈，避免残留数据影响新周期 */
+    memset(canbox.RxData, 0, sizeof(canbox.RxData));
+
+    /* 随机点亮两个灯板 */
+    send_board_light(id1);
+    send_board_light(id2);
+
+    /* 基础刷新时间为 2.5s，首次命中后延长 1s 至 3.5s */
+    uint32_t deadline = HAL_GetTick() + TARGET_LIGHT_ON_MS;
+    bool hit1 = false;
+    bool hit2 = false;
+    bool extended = false;
+
+    while (1)
+    {
+        /* 双击切换模式 */
+        if (detect_double_click())
+        {
+            return true;
+        }
+
+        /* 记录两颗灯板的命中反馈 */
+        if (!hit1 && canbox.RxData[idx1][1] == 1)
+        {
+            hit1 = true;
+        }
+        if (!hit2 && canbox.RxData[idx2][1] == 1)
+        {
+            hit2 = true;
+        }
+
+        /* 两颗灯板全部命中，立即结束本轮 */
+        if (hit1 && hit2)
+        {
+            break;
+        }
+
+        /* 首次命中后将刷新时间由 2.5s 延长到 3.5s，只延长一次 */
+        if (!extended && (hit1 || hit2))
+        {
+            extended = true;
+            deadline += BIG_TARGET_HIT_EXTEND_MS;
+        }
+
+        /* 刷新时间到仍未全部命中，视为超时结束本轮 */
+        if ((int32_t)(HAL_GetTick() - deadline) >= 0)
+        {
+            break;
+        }
+
+        HAL_Delay(1);
+    }
+
+    /* 本轮结束：整组快速熄灭；下一周期入口的 clear_all_boards_before_round()
+       还会再做“完整全灭 + 等待 100ms + 确认反馈全 0”，确认后才点亮下一批 */
+    all_small_boards_off();
 
     return false;
 }
