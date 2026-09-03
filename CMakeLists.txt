@@ -55,8 +55,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Application/Flag_State/Flag_State.c
     # Application/WS2812/WS2812.c
     module/start.cpp
-    # module/Fu.cpp
     module/_can.cpp
+    module/board_ctrl.cpp
+    module/key_ctrl.cpp
+    module/small_target.cpp
+    module/big_target.cpp
 )
 
 # Add include paths

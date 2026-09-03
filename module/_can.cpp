@@ -1,6 +1,9 @@
 #include "_can.h"
 #include <algorithm> // std::copy
 
+/* 全局 CAN 封装对象（start.cpp、board_ctrl.cpp、key_ctrl.cpp 与中断回调共用） */
+CanBox canbox;
+
 CanBox::CanBox(uint32_t stdId){
     this->txHeader.StdId = stdId;
     this->stdId = stdId;
