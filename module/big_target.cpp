@@ -14,6 +14,26 @@
 #include "_can.h"
 #include <string.h>
 
+/* 大符模式连续成功轮数（每轮至少一块灯板被击打即成功） */
+static uint8_t big_success_rounds = 0;
+
+/* 连续成功多少轮后触发整组闪烁庆祝 */
+#define BIG_TARGET_SUCCESS_ROUNDS 5
+
+/* 庆祝闪烁时间，与小符一致，单位毫秒 */
+#define BIG_TARGET_CELEBRATE_MS 2000
+
+/* 庆祝结束后全灭保持时间，与小符一致，单位毫秒 */
+#define BIG_TARGET_ROUND_OFF_MS 500
+
+/**
+ * @brief 清零大符模式连续成功轮数（双击重新进入大符模式时由 start.cpp 调用）
+ */
+void reset_big_target_count(void)
+{
+    big_success_rounds = 0;
+}
+
 /**
  * @brief 大符模式单次流程：一次随机点亮两个灯板
  * @return 期间检测到双击返回 true，正常结束返回 false
@@ -94,9 +114,47 @@ bool run_big_target_once(void)
         HAL_Delay(1);
     }
 
-    /* 本轮结束：整组快速熄灭；下一周期入口的 clear_all_boards_before_round()
+    /* 判定本轮是否成功：只要本轮有一块灯板被击打即算单轮成功；
+       一块都未命中而超时结束则视为失败，重新计数 */
+    bool round_hit = (hit1 || hit2);
+    if (round_hit)
+    {
+        big_success_rounds++;
+    }
+    else
+    {
+        big_success_rounds = 0;
+    }
+
+    if (big_success_rounds >= BIG_TARGET_SUCCESS_ROUNDS)
+    {
+        /* 连续 5 轮成功：整组 5 块灯板一起闪烁庆祝（照搬小符庆祝逻辑） */
+        big_success_rounds = 0; // 庆祝后清零，下一组重新累计
+
+        uint16_t boards[5] = {SMALL_BOARD_ID_BASE, SMALL_BOARD_ID_BASE + 1,
+                              SMALL_BOARD_ID_BASE + 2, SMALL_BOARD_ID_BASE + 3,
+                              SMALL_BOARD_ID_BASE + 4};
+        set_color_change_locked(true); // 庆祝闪烁期间不支持手动换色
+        send_celebration_twinkle(boards);
+
+        bool switch_req = wait_ms_or_double_click(BIG_TARGET_CELEBRATE_MS); // 闪烁 2s，期间可双击退出
+        set_color_change_locked(false); // 庆祝结束，恢复手动换色
+        if (switch_req)
+        {
+            return true;
+        }
+
+        /* 全部熄灭并保持一小段时间，再进入下一轮 */
+        all_small_boards_off();
+        if (wait_ms_or_double_click(BIG_TARGET_ROUND_OFF_MS))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /* 未达到庆祝轮数：整组快速熄灭；下一周期入口的 clear_all_boards_before_round()
        还会再做“完整全灭 + 等待 100ms + 确认反馈全 0”，确认后才点亮下一批 */
     all_small_boards_off();
-
     return false;
 }

@@ -45,6 +45,7 @@ static void switch_target_mode(void)
     if (current_mode == TARGET_MODE_SMALL)
     {
         current_mode = TARGET_MODE_BIG;
+        reset_big_target_count(); // 重新进入大符模式时，连续成功轮数从 0 开始
     }
     else
     {
