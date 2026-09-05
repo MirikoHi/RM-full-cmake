@@ -15,6 +15,7 @@
 #include "board_ctrl.h"
 #include "small_target.h"
 #include "big_target.h"
+#include "ext_ctrl.h"
 #include "rtc.h"
 #include <stdlib.h>
 
@@ -59,6 +60,7 @@ static void switch_target_mode(void)
 void startup(void)
 {
     canbox.CanInit();
+    ext_ctrl_init(); // 外接控制板串口（USART3）命令接收
     canbox.TxData[2] = BLUE; // 上电默认颜色为蓝色
 
     /* 使用 RTC 时间和系统节拍初始化随机数种子 */

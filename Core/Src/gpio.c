@@ -82,13 +82,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = K3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(K3_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : K4_Pin（模式切换按键，使用内部上拉） */
+  /*Configure GPIO pin : K4_Pin */
   GPIO_InitStruct.Pin = K4_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(K4_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB7 */
   GPIO_InitStruct.Pin = GPIO_PIN_7;

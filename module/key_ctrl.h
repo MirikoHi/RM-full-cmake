@@ -10,11 +10,19 @@
  * PC9 按键承担两种操作：
  * - 双击：两次确认的“按下”边沿间隔小于 400ms，返回 true，由外层切换模式；
  * - 长按：按住满 2s 手动切换一次颜色（蓝<->红），内部完成换色并返回 false。
+ * 同时轮询外接控制板串口命令：收到“切换模式”命令同样返回 true，
+ * “切换颜色”命令在 ext_ctrl 内部直接执行。
  * 闪烁庆祝期间（set_color_change_locked(true)）长按会被消费但不换色。
  *
  * @return 检测到一次有效双击返回 true，否则返回 false
  */
 bool poll_mode_switch_keys(void);
+
+/**
+ * @brief 查询是否处于闪烁庆祝换色锁定状态
+ * @return true 锁定中（外接换色命令只消费不改色）
+ */
+bool is_color_change_locked(void);
 
 /**
  * @brief 延时等待，期间轮询按键（长按可手动换色），若检测到双击则提前返回

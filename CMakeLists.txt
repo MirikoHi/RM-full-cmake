@@ -60,6 +60,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     module/key_ctrl.cpp
     module/small_target.cpp
     module/big_target.cpp
+    module/ext_ctrl.cpp
 )
 
 # Add include paths

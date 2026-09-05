@@ -63,10 +63,12 @@ void Error_Handler(void);
 #define K4_Pin GPIO_PIN_9
 #define K4_GPIO_Port GPIOC
 #define K4_EXTI_IRQn EXTI9_5_IRQn
-#define MODE_SWITCH_PC9_Pin GPIO_PIN_9
-#define MODE_SWITCH_PC9_GPIO_Port GPIOC
 
 /* USER CODE BEGIN Private defines */
+
+/* 模式切换按键（PC9/K4），key_ctrl.cpp 轮询使用；放 USER CODE 区防止 CubeMX 重新生成时被清除 */
+#define MODE_SWITCH_PC9_Pin GPIO_PIN_9
+#define MODE_SWITCH_PC9_GPIO_Port GPIOC
 
 /* USER CODE END Private defines */
 

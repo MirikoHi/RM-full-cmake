@@ -14,6 +14,7 @@
 #include "board_ctrl.h"
 #include "_can.h"
 #include "main.h"
+#include "ext_ctrl.h"
 
 /* 双击模式切换 / 长按换色相关时间参数，单位毫秒 */
 #define MODE_SWITCH_DEBOUNCE_MS     20
@@ -58,6 +59,15 @@ static bool color_change_locked = false;
 void set_color_change_locked(bool locked)
 {
     color_change_locked = locked;
+}
+
+/**
+ * @brief 查询是否处于闪烁庆祝换色锁定状态
+ * @return true 锁定中，false 可正常换色
+ */
+bool is_color_change_locked(void)
+{
+    return color_change_locked;
 }
 
 /**
@@ -179,6 +189,13 @@ bool poll_mode_switch_keys(void)
             return true;
         }
     }
+
+    /* 外接控制板串口命令：切模式命令与双击等价 */
+    if (ext_ctrl_process_uart())
+    {
+        return true;
+    }
+
     return false;
 }
 
