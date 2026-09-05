@@ -47,10 +47,12 @@ static void switch_target_mode(void)
     {
         current_mode = TARGET_MODE_BIG;
         reset_big_target_count(); // 重新进入大符模式时，连续成功轮数从 0 开始
+        ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE); // 进入大符：开始持续上报“未激活”
     }
     else
     {
         current_mode = TARGET_MODE_SMALL;
+        ext_ctrl_set_big_state(EXT_STATE_NONE); // 切回小符：停止大符状态上报
     }
 }
 

@@ -11,6 +11,12 @@
   *   0x02 切换颜色（蓝 <-> 红，等效 PC9 长按换色一次）
   * 校验通过后主板回 ACK：AA 55 (CMD|0x80) CHK
   *
+  * 大符模式期间主板额外持续上报状态帧（沿用同格式，外接板无需回 ACK）：
+  *   0x11 大符未激活
+  *   0x12 大符已激活（连续 5 轮成功，闪烁庆祝中）
+  * 默认每 EXT_STATUS_PERIOD_MS（100ms）重发一次，状态切换时立即补发一帧；
+  * 杜邦线直连抗干扰靠“周期重发 + 8 位校验”，丢帧最多 100ms 后自动补上。
+  *
   * 接收用中断逐字节存入环形缓冲，主循环约每 1ms 轮询解析一次，
   * 避免在中断里做耗时处理；115200 波特率下 1ms 约 11 字节，缓冲取 16 足够。
   ******************************************************************************
@@ -25,8 +31,15 @@
 #define EXT_FRAME_LEN 4
 #define EXT_FRAME_CHK_IDX 3
 
+/* 大符状态持续上报周期，单位毫秒 */
+#define EXT_STATUS_PERIOD_MS 100
+
 /* 接收环形缓冲大小 */
 #define EXT_RX_RING_SIZE 16
+
+/* 当前需上报的大符状态（EXT_STATE_NONE 表示停止上报）与上次发送时刻 */
+static uint8_t ext_status_cmd = EXT_STATE_NONE;
+static uint32_t ext_status_last = 0;
 
 /* 接收环形缓冲（中断写入 / 主循环读取） */
 static volatile uint8_t ext_rx_ring[EXT_RX_RING_SIZE];
@@ -53,6 +66,17 @@ static void ext_send_ack(uint8_t cmd)
 {
     uint8_t frame[EXT_FRAME_LEN] = {EXT_FRAME_H1, EXT_FRAME_H2,
                                     (uint8_t)(cmd | 0x80), 0};
+    frame[EXT_FRAME_CHK_IDX] = (uint8_t)(frame[0] + frame[1] + frame[2]);
+    HAL_UART_Transmit(&huart3, frame, EXT_FRAME_LEN, 50);
+}
+
+/**
+ * @brief 发送一帧当前大符状态（主控主动上报，外接板无需回 ACK）
+ */
+static void ext_send_status(void)
+{
+    uint8_t frame[EXT_FRAME_LEN] = {EXT_FRAME_H1, EXT_FRAME_H2,
+                                    ext_status_cmd, 0};
     frame[EXT_FRAME_CHK_IDX] = (uint8_t)(frame[0] + frame[1] + frame[2]);
     HAL_UART_Transmit(&huart3, frame, EXT_FRAME_LEN, 50);
 }
@@ -165,7 +189,28 @@ bool ext_ctrl_process_uart(void)
             switch_requested = true;
         }
     }
+
+    /* 大符模式期间持续上报：本函数由按键轮询约每 1ms 调用一次，
+       在这里按固定周期重发当前状态，切换状态后首次轮询立即补发 */
+    if (ext_status_cmd != EXT_STATE_NONE &&
+        (uint32_t)(HAL_GetTick() - ext_status_last) >= EXT_STATUS_PERIOD_MS)
+    {
+        ext_status_last = HAL_GetTick();
+        ext_send_status();
+    }
     return switch_requested;
+}
+
+/**
+ * @brief 设置/停止大符状态持续上报
+ *
+ * @param state EXT_STATE_BIG_INACTIVE / EXT_STATE_BIG_ACTIVE_FLASH /
+ *              EXT_STATE_NONE（停止）
+ */
+void ext_ctrl_set_big_state(uint8_t state)
+{
+    ext_status_cmd = state;
+    ext_status_last = 0; // 置 0 保证下一轮轮询立即发送新状态
 }
 
 /**
@@ -176,6 +221,8 @@ void ext_ctrl_init(void)
     ext_parse_state = EXT_PARSE_WAIT_H1;
     ext_rx_head = 0;
     ext_rx_tail = 0;
+    ext_status_cmd = EXT_STATE_NONE; // 上电默认不主动上报（默认小符模式）
+    ext_status_last = 0;
     HAL_UART_Receive_IT(&huart3, &ext_rx_tmp, 1);
 }
 

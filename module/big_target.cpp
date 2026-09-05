@@ -11,6 +11,7 @@
 #include "big_target.h"
 #include "board_ctrl.h"
 #include "key_ctrl.h"
+#include "ext_ctrl.h"
 #include "_can.h"
 #include <string.h>
 
@@ -51,6 +52,9 @@ bool run_big_target_once(void)
     uint32_t id2 = SMALL_BOARD_ID_BASE + second;
     uint8_t idx1 = first;
     uint8_t idx2 = second;
+
+    /* 大符模式期间持续向外接控制板上报状态：非闪烁庆祝阶段均为“未激活” */
+    ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE);
 
     /* 先熄灭上一轮可能残留的灯板，并确认清场完成后再点亮 */
     if (clear_all_boards_before_round())
@@ -135,10 +139,12 @@ bool run_big_target_once(void)
                               SMALL_BOARD_ID_BASE + 2, SMALL_BOARD_ID_BASE + 3,
                               SMALL_BOARD_ID_BASE + 4};
         set_color_change_locked(true); // 庆祝闪烁期间不支持手动换色
+        ext_ctrl_set_big_state(EXT_STATE_BIG_ACTIVE_FLASH); // 连续 5 轮成功：大符已激活闪烁
         send_celebration_twinkle(boards);
 
         bool switch_req = wait_ms_or_double_click(BIG_TARGET_CELEBRATE_MS); // 闪烁 2s，期间可双击退出
         set_color_change_locked(false); // 庆祝结束，恢复手动换色
+        ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE); // 闪烁结束：回到未激活
         if (switch_req)
         {
             return true;
