@@ -37,9 +37,11 @@ void reset_big_target_count(void)
 
 /**
  * @brief 大符模式单次流程：一次随机点亮两个灯板
- * @return 期间检测到双击返回 true，正常结束返回 false
+ * @return BIG_RUN_CONTINUE 普通一轮结束，继续下一轮；
+ *         BIG_RUN_COMPLETED 闪烁庆祝正常结束（激活完成）；
+ *         BIG_RUN_ABORTED 期间双击/切模式/复位请求，中断当前流程
  */
-bool run_big_target_once(void)
+BigRunResult_t run_big_target_once(void)
 {
     uint8_t first = Rand(5);
     uint8_t second = Rand(5);
@@ -53,13 +55,10 @@ bool run_big_target_once(void)
     uint8_t idx1 = first;
     uint8_t idx2 = second;
 
-    /* 大符模式期间持续向外接控制板上报状态：非闪烁庆祝阶段均为“未激活” */
-    ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE);
-
     /* 先熄灭上一轮可能残留的灯板，并确认清场完成后再点亮 */
     if (clear_all_boards_before_round())
     {
-        return true;
+        return BIG_RUN_ABORTED;
     }
 
     /* 清空上一周期的命中反馈，避免残留数据影响新周期 */
@@ -69,7 +68,7 @@ bool run_big_target_once(void)
        各自回报“已亮起/已命中”，保证两灯同时亮起；未确认的板自动重发 */
     if (light_two_boards_and_confirm(id1, id2))
     {
-        return true; // 确认期间检测到双击
+        return BIG_RUN_ABORTED; // 确认期间检测到双击/切模式/复位
     }
 
     /* 基础刷新时间为 2.5s，首次命中后延长 1s 至 3.5s */
@@ -83,7 +82,7 @@ bool run_big_target_once(void)
         /* 双击切换模式（长按换色在轮询内部完成） */
         if (poll_mode_switch_keys())
         {
-            return true;
+            return BIG_RUN_ABORTED;
         }
 
         /* 记录两颗灯板的命中反馈 */
@@ -139,7 +138,7 @@ bool run_big_target_once(void)
                               SMALL_BOARD_ID_BASE + 2, SMALL_BOARD_ID_BASE + 3,
                               SMALL_BOARD_ID_BASE + 4};
         set_color_change_locked(true); // 庆祝闪烁期间不支持手动换色
-        ext_ctrl_set_big_state(EXT_STATE_BIG_ACTIVE_FLASH); // 连续 5 轮成功：大符已激活闪烁
+        ext_ctrl_set_big_state(EXT_STATE_BIG_ACTIVATE_DONE); // 连续 5 轮成功：大符激活完成
         send_celebration_twinkle(boards);
 
         bool switch_req = wait_ms_or_double_click(BIG_TARGET_CELEBRATE_MS); // 闪烁 2s，期间可双击退出
@@ -147,20 +146,20 @@ bool run_big_target_once(void)
         ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE); // 闪烁结束：回到未激活
         if (switch_req)
         {
-            return true;
+            return BIG_RUN_ABORTED;
         }
 
-        /* 全部熄灭并保持一小段时间，再进入下一轮 */
+        /* 全部熄灭并保持一小段时间；结束后外层回到“未激活待机” */
         all_small_boards_off();
         if (wait_ms_or_double_click(BIG_TARGET_ROUND_OFF_MS))
         {
-            return true;
+            return BIG_RUN_ABORTED;
         }
-        return false;
+        return BIG_RUN_COMPLETED; // 激活完成，等待外层回到未激活待机
     }
 
     /* 未达到庆祝轮数：整组快速熄灭；下一周期入口的 clear_all_boards_before_round()
        还会再做“完整全灭 + 等待 100ms + 确认反馈全 0”，确认后才点亮下一批 */
     all_small_boards_off();
-    return false;
+    return BIG_RUN_CONTINUE; // 未达激活完成，外层继续下一轮
 }

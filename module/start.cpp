@@ -13,6 +13,7 @@
 #include "start.h"
 #include "_can.h"
 #include "board_ctrl.h"
+#include "key_ctrl.h"
 #include "small_target.h"
 #include "big_target.h"
 #include "ext_ctrl.h"
@@ -32,6 +33,10 @@ typedef enum
 /* 当前工作模式 */
 static TargetMode_t current_mode = BOOT_MODE;
 
+/* 大符是否处于“激活会话”中：收到启动命令后为 true，
+   激活完成/复位/切回小符后回到 false（未激活待机） */
+static bool big_activation_active = false;
+
 /**
  * @brief 切换大符/小符模式，切换前清理旧模式输出
  */
@@ -43,16 +48,58 @@ static void switch_target_mode(void)
     /* 双击切换模式后颜色恢复默认蓝色 */
     canbox.TxData[2] = BLUE;
 
+    /* 丢弃残留的启动/复位请求，避免串扰到下一次进入大符 */
+    ext_ctrl_clear_big_requests();
+
     if (current_mode == TARGET_MODE_SMALL)
     {
         current_mode = TARGET_MODE_BIG;
         reset_big_target_count(); // 重新进入大符模式时，连续成功轮数从 0 开始
+        big_activation_active = false; // 刚切到大符：全灭未激活，等待启动命令
         ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE); // 进入大符：开始持续上报“未激活”
     }
     else
     {
         current_mode = TARGET_MODE_SMALL;
+        big_activation_active = false;
         ext_ctrl_set_big_state(EXT_STATE_NONE); // 切回小符：停止大符状态上报
+    }
+}
+
+/**
+ * @brief 大符未激活待机：全灭等待“启动 / 复位 / 切模式”
+ *
+ * 复位命令在函数内消化后继续等待；启动命令通过 start_requested 传出；
+ * 双击或串口切模式命令返回 true，交由外层切回小符。
+ *
+ * @param start_requested 输出：是否收到启动命令（EXT_CMD_START_BIG）
+ * @return true 需要切换回小符
+ */
+static bool wait_big_idle_or_start(bool *start_requested)
+{
+    *start_requested = false;
+
+    while (1)
+    {
+        /* 双击/串口切模式/复位都会让按键轮询返回 true，以便尽快退出等待 */
+        if (poll_mode_switch_keys())
+        {
+            if (ext_ctrl_take_big_reset())
+            {
+                /* 复位：保持全灭未激活，继续等待启动命令 */
+                ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE);
+                continue;
+            }
+            return true; // 双击或串口切模式：切回小符
+        }
+
+        if (ext_ctrl_take_big_start())
+        {
+            *start_requested = true;
+            return false;
+        }
+
+        HAL_Delay(1);
     }
 }
 
@@ -80,7 +127,47 @@ void startup(void)
         }
         else
         {
-            switch_requested = run_big_target_once();
+            if (!big_activation_active)
+            {
+                /* 未激活待机：全灭，等待启动命令（复位命令在等待函数内消化） */
+                bool start_requested = false;
+                if (wait_big_idle_or_start(&start_requested))
+                {
+                    switch_requested = true; // 双击或串口切模式：切回小符
+                }
+                else if (start_requested)
+                {
+                    big_activation_active = true;
+                    ext_ctrl_set_big_state(EXT_STATE_BIG_ACTIVATING); // 正在激活
+                }
+            }
+            else
+            {
+                BigRunResult_t run_result = run_big_target_once();
+
+                if (run_result == BIG_RUN_COMPLETED)
+                {
+                    /* 激活完成闪烁已正常结束（状态已回到未激活），等下一次启动 */
+                    big_activation_active = false;
+                }
+                else if (run_result == BIG_RUN_ABORTED)
+                {
+                    big_activation_active = false;
+
+                    if (ext_ctrl_take_big_reset())
+                    {
+                        /* 复位命令：立即全灭回到未激活，重新等待启动 */
+                        all_small_boards_off();
+                        reset_big_target_count();
+                        ext_ctrl_set_big_state(EXT_STATE_BIG_INACTIVE);
+                    }
+                    else
+                    {
+                        switch_requested = true; // 双击或串口切模式：切回小符
+                    }
+                }
+                /* BIG_RUN_CONTINUE：本轮未完成激活，保持“正在激活”继续下一轮 */
+            }
         }
 
         if (switch_requested)

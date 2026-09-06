@@ -190,7 +190,8 @@ bool poll_mode_switch_keys(void)
         }
     }
 
-    /* 外接控制板串口命令：切模式命令与双击等价 */
+    /* 外接控制板串口命令：切模式命令与双击等价；
+       大符复位命令也会返回 true，使当前流程尽快退出（由上层区分处理） */
     if (ext_ctrl_process_uart())
     {
         return true;

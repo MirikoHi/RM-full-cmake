@@ -9,11 +9,14 @@
   * 命令：
   *   0x01 切换模式（小符 <-> 大符，等效 PC9 双击）
   *   0x02 切换颜色（蓝 <-> 红，等效 PC9 长按换色一次）
+  *   0x03 启动大符激活（仅大符未激活待机时生效）
+  *   0x04 复位大符（立即全灭回到未激活，重新等待启动）
   * 校验通过后主板回 ACK：AA 55 (CMD|0x80) CHK
   *
   * 大符模式期间主板额外持续上报状态帧（沿用同格式，外接板无需回 ACK）：
   *   0x11 大符未激活
-  *   0x12 大符已激活（连续 5 轮成功，闪烁庆祝中）
+  *   0x12 大符正在激活（击打中）
+  *   0x13 大符激活完成（闪烁庆祝中）
   * 默认每 EXT_STATUS_PERIOD_MS（100ms）重发一次，状态切换时立即补发一帧；
   * 杜邦线直连抗干扰靠“周期重发 + 8 位校验”，丢帧最多 100ms 后自动补上。
   *
@@ -40,6 +43,10 @@
 /* 当前需上报的大符状态（EXT_STATE_NONE 表示停止上报）与上次发送时刻 */
 static uint8_t ext_status_cmd = EXT_STATE_NONE;
 static uint32_t ext_status_last = 0;
+
+/* 未处理的大符启动/复位请求：仅大符模式下置位，由主流程取走 */
+static bool ext_big_start_pending = false;
+static bool ext_big_reset_pending = false;
 
 /* 接收环形缓冲（中断写入 / 主循环读取） */
 static volatile uint8_t ext_rx_ring[EXT_RX_RING_SIZE];
@@ -112,6 +119,22 @@ static bool ext_handle_command(uint8_t cmd)
         case EXT_CMD_TOGGLE_COLOR:
             ext_send_ack(cmd);
             ext_apply_color_toggle();
+            break;
+
+        case EXT_CMD_START_BIG:
+            ext_send_ack(cmd);
+            if (ext_status_cmd == EXT_STATE_BIG_INACTIVE) // 仅大符未激活待机时启动才生效
+            {
+                ext_big_start_pending = true;
+            }
+            break;
+
+        case EXT_CMD_RESET_BIG:
+            ext_send_ack(cmd);
+            if (ext_status_cmd != EXT_STATE_NONE) // 仅大符模式下的复位命令有效
+            {
+                ext_big_reset_pending = true;
+            }
             break;
 
         default:
@@ -198,19 +221,49 @@ bool ext_ctrl_process_uart(void)
         ext_status_last = HAL_GetTick();
         ext_send_status();
     }
-    return switch_requested;
+    /* 大符模式下收到复位命令也要让当前流程尽快退出，由上层区分“切模式/复位” */
+    return switch_requested || ext_big_reset_pending;
 }
 
 /**
  * @brief 设置/停止大符状态持续上报
  *
- * @param state EXT_STATE_BIG_INACTIVE / EXT_STATE_BIG_ACTIVE_FLASH /
- *              EXT_STATE_NONE（停止）
+ * @param state EXT_STATE_BIG_INACTIVE / EXT_STATE_BIG_ACTIVATING /
+ *              EXT_STATE_BIG_ACTIVATE_DONE / EXT_STATE_NONE（停止）
  */
 void ext_ctrl_set_big_state(uint8_t state)
 {
     ext_status_cmd = state;
     ext_status_last = 0; // 置 0 保证下一轮轮询立即发送新状态
+}
+
+/**
+ * @brief 取走大符“启动”请求（收到 EXT_CMD_START_BIG 后置位）
+ */
+bool ext_ctrl_take_big_start(void)
+{
+    bool request = ext_big_start_pending;
+    ext_big_start_pending = false;
+    return request;
+}
+
+/**
+ * @brief 取走大符“复位”请求（收到 EXT_CMD_RESET_BIG 后置位）
+ */
+bool ext_ctrl_take_big_reset(void)
+{
+    bool request = ext_big_reset_pending;
+    ext_big_reset_pending = false;
+    return request;
+}
+
+/**
+ * @brief 清空未处理的大符启动/复位请求（切换模式时丢弃残留请求）
+ */
+void ext_ctrl_clear_big_requests(void)
+{
+    ext_big_start_pending = false;
+    ext_big_reset_pending = false;
 }
 
 /**
@@ -223,6 +276,8 @@ void ext_ctrl_init(void)
     ext_rx_tail = 0;
     ext_status_cmd = EXT_STATE_NONE; // 上电默认不主动上报（默认小符模式）
     ext_status_last = 0;
+    ext_big_start_pending = false;
+    ext_big_reset_pending = false;
     HAL_UART_Receive_IT(&huart3, &ext_rx_tmp, 1);
 }
 
