@@ -50,8 +50,9 @@ void resend_light_to_lit_boards(void);
 /**
  * @brief 五块灯板全部命中后的庆祝闪烁：向全部灯板发送 twinkle=1 命令
  * @param board_ids 灯板 CAN 标准帧 ID 数组（长度 5，通常为当轮洗牌顺序）
+ * @param mode 命令帧字节5：0=小符（灯板闪完复位），1=大符（灯板闪完不复位）
  */
-void send_celebration_twinkle(const uint16_t *board_ids);
+void send_celebration_twinkle(const uint16_t *board_ids, uint8_t mode);
 
 /**
  * @brief 熄灭全部小符灯板
@@ -71,9 +72,19 @@ bool clear_all_boards_before_round(void);
 bool light_board_and_confirm(uint32_t board_id);
 
 /**
+ * @brief 大符每轮开始：给全部 5 块灯板发“本轮进度”命令（mode=1, hitEnable=0, step=轮号）
+ *
+ * 未抽中的灯板据此显示整体激活进度；上一轮被抽中的灯板也借此清掉命中锁存，
+ * 下一帧点亮命令到达时才会重新画“待击打”。
+ * @param step 本轮轮号，0 起（= 本轮开始前已完成的连续成功轮数）
+ */
+void send_big_round_progress(uint8_t step);
+
+/**
  * @brief 同时点亮两块灯板并并行等待确认（大符模式），未确认按新序号有界重发
+ * @param step 本轮轮号，随命令帧字节7下发，供灯板显示进度
  * @retval true 等待/重发期间检测到双击，调用方应交由外层切换模式
  */
-bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2);
+bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2, uint8_t step);
 
 #endif /* __BOARD_CTRL_H__ */

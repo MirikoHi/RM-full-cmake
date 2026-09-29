@@ -37,9 +37,6 @@
 /* 大符状态持续上报周期，单位毫秒 */
 #define EXT_STATUS_PERIOD_MS 100
 
-/* 接收环形缓冲大小 */
-#define EXT_RX_RING_SIZE 16
-
 /* 当前需上报的大符状态（EXT_STATE_NONE 表示停止上报）与上次发送时刻 */
 static uint8_t ext_status_cmd = EXT_STATE_NONE;
 static uint32_t ext_status_last = 0;
@@ -48,23 +45,11 @@ static uint32_t ext_status_last = 0;
 static bool ext_big_start_pending = false;
 static bool ext_big_reset_pending = false;
 
-/* 接收环形缓冲（中断写入 / 主循环读取） */
-static volatile uint8_t ext_rx_ring[EXT_RX_RING_SIZE];
-static volatile uint8_t ext_rx_head = 0;
-static volatile uint8_t ext_rx_tail = 0;
+/* 固定长度接收帧：AA 55 CMD CHK */
+static volatile uint8_t ext_rx_frame[EXT_FRAME_LEN];
+static volatile uint8_t ext_rx_index = 0;
+static volatile bool ext_switch_pending = false;
 static uint8_t ext_rx_tmp;
-
-/* 帧解析状态机 */
-typedef enum
-{
-    EXT_PARSE_WAIT_H1 = 0, // 等待帧头1 (0xAA)
-    EXT_PARSE_WAIT_H2,     // 等待帧头2 (0x55)
-    EXT_PARSE_WAIT_CMD,    // 等待命令字
-    EXT_PARSE_WAIT_CHK     // 等待校验字节
-} ExtParseState_t;
-
-static ExtParseState_t ext_parse_state = EXT_PARSE_WAIT_H1;
-static uint8_t ext_parse_cmd = 0;
 
 /**
  * @brief 回一帧 ACK，供外接控制板确认命令已收到
@@ -144,55 +129,39 @@ static bool ext_handle_command(uint8_t cmd)
 }
 
 /**
- * @brief 状态机喂入一个字节，返回本字节是否使一条“切模式”命令完整生效
+ * @brief 按固定帧格式接收一个字节，收满后校验并处理命令
  */
-static bool ext_feed_byte(uint8_t b)
+static void ext_feed_byte(uint8_t b)
 {
-    switch (ext_parse_state)
+    if (ext_rx_index == 0U)
     {
-        case EXT_PARSE_WAIT_H1:
-            if (b == EXT_FRAME_H1)
-            {
-                ext_parse_state = EXT_PARSE_WAIT_H2;
-            }
-            break;
-
-        case EXT_PARSE_WAIT_H2:
-            if (b == EXT_FRAME_H2)
-            {
-                ext_parse_state = EXT_PARSE_WAIT_CMD;
-            }
-            else if (b == EXT_FRAME_H1)
-            {
-                ext_parse_state = EXT_PARSE_WAIT_H2; // 帧头连续出现时按新帧处理
-            }
-            else
-            {
-                ext_parse_state = EXT_PARSE_WAIT_H1;
-            }
-            break;
-
-        case EXT_PARSE_WAIT_CMD:
-            ext_parse_cmd = b;
-            ext_parse_state = EXT_PARSE_WAIT_CHK;
-            break;
-
-        case EXT_PARSE_WAIT_CHK:
-        {
-            uint8_t expect = (uint8_t)(EXT_FRAME_H1 + EXT_FRAME_H2 + ext_parse_cmd);
-            ext_parse_state = EXT_PARSE_WAIT_H1; // 无论对错都回到找帧头
-            if (b == expect)
-            {
-                return ext_handle_command(ext_parse_cmd);
-            }
-            break;
-        }
-
-        default:
-            ext_parse_state = EXT_PARSE_WAIT_H1;
-            break;
+        if (b == EXT_FRAME_H1) ext_rx_frame[ext_rx_index++] = b;
+        return;
     }
-    return false;
+    if (ext_rx_index == 1U)
+    {
+        if (b == EXT_FRAME_H2)
+        {
+            ext_rx_frame[ext_rx_index++] = b;
+        }
+        else
+        {
+            ext_rx_index = (b == EXT_FRAME_H1) ? 1U : 0U;
+            if (ext_rx_index != 0U) ext_rx_frame[0] = b;
+        }
+        return;
+    }
+
+    ext_rx_frame[ext_rx_index++] = b;
+    if (ext_rx_index < EXT_FRAME_LEN) return;
+
+    uint8_t cmd = ext_rx_frame[2];
+    uint8_t expect = (uint8_t)(ext_rx_frame[0] + ext_rx_frame[1] + cmd);
+    if (ext_rx_frame[3] == expect && ext_handle_command(cmd))
+    {
+        ext_switch_pending = true;
+    }
+    ext_rx_index = 0U;
 }
 
 /**
@@ -200,18 +169,8 @@ static bool ext_feed_byte(uint8_t b)
  */
 bool ext_ctrl_process_uart(void)
 {
-    bool switch_requested = false;
-
-    while (ext_rx_head != ext_rx_tail)
-    {
-        uint8_t b = ext_rx_ring[ext_rx_tail];
-        ext_rx_tail = (uint8_t)((ext_rx_tail + 1) % EXT_RX_RING_SIZE);
-
-        if (ext_feed_byte(b))
-        {
-            switch_requested = true;
-        }
-    }
+    bool switch_requested = ext_switch_pending;
+    ext_switch_pending = false;
 
     /* 大符模式期间持续上报：本函数由按键轮询约每 1ms 调用一次，
        在这里按固定周期重发当前状态，切换状态后首次轮询立即补发 */
@@ -271,9 +230,8 @@ void ext_ctrl_clear_big_requests(void)
  */
 void ext_ctrl_init(void)
 {
-    ext_parse_state = EXT_PARSE_WAIT_H1;
-    ext_rx_head = 0;
-    ext_rx_tail = 0;
+    ext_rx_index = 0;
+    ext_switch_pending = false;
     ext_status_cmd = EXT_STATE_NONE; // 上电默认不主动上报（默认小符模式）
     ext_status_last = 0;
     ext_big_start_pending = false;
@@ -281,17 +239,12 @@ void ext_ctrl_init(void)
     HAL_UART_Receive_IT(&huart3, &ext_rx_tmp, 1);
 }
 
-/* 接收完成回调：中断上下文，只入环形缓冲并重新挂接接收 */
+/* 接收完成回调：逐字节写入固定长度帧并重新挂接接收 */
 extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3)
     {
-        uint8_t next = (uint8_t)((ext_rx_head + 1) % EXT_RX_RING_SIZE);
-        if (next != ext_rx_tail) // 缓冲未满才存入
-        {
-            ext_rx_ring[ext_rx_head] = ext_rx_tmp;
-            ext_rx_head = next;
-        }
+        ext_feed_byte(ext_rx_tmp);
         HAL_UART_Receive_IT(&huart3, &ext_rx_tmp, 1);
     }
 }

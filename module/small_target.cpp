@@ -78,7 +78,7 @@ bool run_small_target_once(void)
 
     /* 五个灯板全部命中，闪烁庆祝（庆祝闪烁期间不支持手动换色） */
     set_color_change_locked(true);
-    send_celebration_twinkle(board);
+    send_celebration_twinkle(board, 0);
 
     bool switch_req = wait_ms_or_double_click(2000); // 闪烁 2s，期间可双击退出
     set_color_change_locked(false); // 庆祝结束，恢复手动换色

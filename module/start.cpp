@@ -20,6 +20,12 @@
 #include "rtc.h"
 #include <stdlib.h>
 
+uint8_t small_t_status = 0;
+uint8_t big_t_status = 0;
+
+uint8_t small_co = 0;
+uint8_t big_co = 0;
+
 /* 目标模式枚举 */
 typedef enum
 {
@@ -36,6 +42,30 @@ static TargetMode_t current_mode = BOOT_MODE;
 /* 大符是否处于“激活会话”中：收到启动命令后为 true，
    激活完成/复位/切回小符后回到 false（未激活待机） */
 static bool big_activation_active = false;
+
+/**
+ * @brief 刷新对外运行状态/颜色标志（每次主循环开始时调用）
+ */
+static void update_outer_flags(void)
+{
+    /* 命令字颜色：BLUE=1, RED=0；对外标志约定蓝=1, 红=2 */
+    uint8_t color = (canbox.TxData[2] == BLUE) ? 1U : 2U;
+
+    if (current_mode == TARGET_MODE_SMALL)
+    {
+        small_t_status = 1;
+        big_t_status = 0;
+        small_co = color;
+        big_co = 0;
+    }
+    else
+    {
+        small_t_status = 0;
+        big_t_status = big_activation_active ? 2U : 1U;
+        small_co = 0;
+        big_co = color;
+    }
+}
 
 /**
  * @brief 切换大符/小符模式，切换前清理旧模式输出
@@ -72,12 +102,15 @@ static void switch_target_mode(void)
  * 复位命令在函数内消化后继续等待；启动命令通过 start_requested 传出；
  * 双击或串口切模式命令返回 true，交由外层切回小符。
  *
- * @param start_requested 输出：是否收到启动命令（EXT_CMD_START_BIG）
+ * @param start_requested 输出：是否收到启动请求（外接板 START 命令或按键单击）
  * @return true 需要切换回小符
  */
 static bool wait_big_idle_or_start(bool *start_requested)
 {
     *start_requested = false;
+
+    /* 丢弃进入待机前残留的单击：小符模式或上一轮激活期间的单击不算启动 */
+    clear_single_click_big_start();
 
     while (1)
     {
@@ -93,7 +126,8 @@ static bool wait_big_idle_or_start(bool *start_requested)
             return true; // 双击或串口切模式：切回小符
         }
 
-        if (ext_ctrl_take_big_start())
+        /* 启动来源：外接板 START 命令，或大符待机期间的按键单击 */
+        if (ext_ctrl_take_big_start() || take_single_click_big_start())
         {
             *start_requested = true;
             return false;
@@ -120,6 +154,8 @@ void startup(void)
     while (1)
     {
         bool switch_requested = false;
+
+        update_outer_flags(); // 刷新对外状态/颜色标志
 
         if (current_mode == TARGET_MODE_SMALL)
         {

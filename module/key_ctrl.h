@@ -40,4 +40,18 @@ bool wait_ms_or_double_click(uint32_t ms);
  */
 void set_color_change_locked(bool locked);
 
+/**
+ * @brief 取走大符“单击启动”请求
+ *
+ * 按键单击（双击窗口过后仍没有第二次按下）会置位该请求，
+ * 由 start.cpp 在“大符未激活待机”的等待里取走，进入正在激活状态。
+ * @return true 表示有待处理的单击启动请求，取走后清空
+ */
+bool take_single_click_big_start(void);
+
+/**
+ * @brief 丢弃未处理的单击启动请求（进入大符待机时调用，避免误启动）
+ */
+void clear_single_click_big_start(void);
+
 #endif /* __KEY_CTRL_H__ */

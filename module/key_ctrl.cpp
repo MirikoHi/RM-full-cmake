@@ -52,6 +52,9 @@ static ModeSwitchKey_t mode_switch_keys[] =
 /* 击打完成闪烁庆祝期间锁定手动换色：由小符流程 set_color_change_locked() 设置 */
 static bool color_change_locked = false;
 
+/* 大符“单击启动”请求：大符未激活待机时由 start.cpp 取走 */
+static bool single_click_big_start = false;
+
 /**
  * @brief 锁定/解锁长按换色（闪烁庆祝期间不支持换色）
  * @param locked true 锁定，false 恢复
@@ -161,6 +164,14 @@ static bool poll_mode_switch_key(ModeSwitchKey_t *key)
                 resend_light_to_lit_boards(); // 给每一块亮着的灯板补发带新颜色的点亮命令
             }
         }
+        /* 已松开、双击窗口过后仍没有第二次按下：算一次单击 */
+        else if (!key->debounced_state && key->click_count == 1 &&
+                 !key->long_press_done &&
+                 (now - key->first_click_time) >= MODE_SWITCH_DOUBLE_CLICK_MS)
+        {
+            key->click_count = 0;
+            single_click_big_start = true; // 大符未激活待机时由 start.cpp 取走
+        }
     }
 
     return false;
@@ -217,4 +228,22 @@ bool wait_ms_or_double_click(uint32_t ms)
         HAL_Delay(1);
     }
     return false;
+}
+
+/**
+ * @brief 取走大符“单击启动”请求（取走后清空）
+ */
+bool take_single_click_big_start(void)
+{
+    bool requested = single_click_big_start;
+    single_click_big_start = false;
+    return requested;
+}
+
+/**
+ * @brief 丢弃未处理的单击启动请求
+ */
+void clear_single_click_big_start(void)
+{
+    single_click_big_start = false;
 }

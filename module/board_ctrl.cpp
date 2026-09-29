@@ -31,6 +31,20 @@ static uint8_t board_proto[5] = {BOARD_PROTO_UNKNOWN};
 /* 当前处于“点亮/常亮”状态的灯板掩码：长按换色后需要向这些板补发点亮命令 */
 static bool lit_board_mask[5] = {0};
 
+/* 命令帧字节5(模式)/字节7(轮号)的当前取值：小符与熄灭固定 0/0，
+   大符流程发送前切到 mode=1 + 本轮轮号 */
+static uint8_t order_mode = 0;
+static uint8_t order_step = 0;
+
+/**
+ * @brief 设置后续命令帧的模式与轮号字段（字节5/字节7）
+ */
+static void set_order_context(uint8_t mode, uint8_t step)
+{
+    order_mode = mode;
+    order_step = step;
+}
+
 /* 随机数辅助函数 */
 int Rand(int i)
 {
@@ -49,6 +63,8 @@ static void send_board_order(uint32_t board_id, uint8_t hit_enable, uint8_t seq)
     canbox.TxData[1] = hit_enable;  // 点亮或熄灭
     canbox.TxData[3] = 0;           // 闪烁状态
     canbox.TxData[4] = seq;         // 命令序号，供灯板执行后回显
+    canbox.TxData[5] = order_mode;  // 0=小符/熄灭，1=大符
+    canbox.TxData[7] = order_step;  // 大符：本轮轮号（小符恒 0）
 
     while (!canbox.Send(board_id, 0x08)) {}
 }
@@ -72,14 +88,31 @@ static void send_board_light(uint32_t board_id)
 }
 
 /**
- * @brief 手动换色后，向每一块当前亮着的灯板补发带新颜色的点亮命令
+ * @brief 手动换色后，把新颜色补发给每一块灯板
  *
- * 灯板固件支持“已点亮时收到不同颜色的点亮命令就按新颜色重绘”，
- * 因此主控长按换色后只需把当前 TxData[2]（新颜色）补发给所有
- * 仍亮着的灯板，亮灯即可即时变色；熄灭中的板无需处理。
+ * 亮着的板补发点亮命令（灯板已亮时收到不同颜色会按新颜色重绘）；
+ * 没点亮的板也要收到一条命令，好让常亮的 R 标跟着换色。
  */
 void resend_light_to_lit_boards(void)
 {
+    if (order_mode == 1)
+    {
+        /* 大符：先给全部 5 块重发本轮进度，未抽中的板据此换色 */
+        send_big_round_progress(order_step);
+    }
+    else
+    {
+        /* 小符：没点亮的板补一条熄灭命令，只为刷新常亮的 R 标 */
+        for (uint8_t i = 0; i < 5; i++)
+        {
+            if (!lit_board_mask[i])
+            {
+                send_board_order(SMALL_BOARD_ID_BASE + i, 0, ++board_cmd_seq[i]);
+            }
+        }
+    }
+
+    /* 亮着的板补发点亮命令（大符下就是被抽中的两块） */
     for (uint8_t i = 0; i < 5; i++)
     {
         if (lit_board_mask[i])
@@ -96,13 +129,28 @@ void resend_light_to_lit_boards(void)
  * 颜色沿用 TxData[2]（闪烁庆祝期间由上层锁定，不支持换色）。
  * @param board_ids 灯板 CAN 标准帧 ID 数组（长度 5）
  */
-void send_celebration_twinkle(const uint16_t *board_ids)
+void send_celebration_twinkle(const uint16_t *board_ids, uint8_t mode)
 {
+    set_order_context(mode, 0);
     canbox.TxData[3] = 1; // 开启闪烁
     for (uint8_t j = 0; j < 5; j++)
     {
         canbox.TxData[4] = ++board_cmd_seq[board_ids[j] - SMALL_BOARD_ID_BASE]; // 命令序号
         while (!canbox.Send(board_ids[j], 0x08)) {}
+    }
+}
+
+/**
+ * @brief 大符每轮开始：给全部 5 块灯板发“本轮进度”命令（mode=1, hitEnable=0, step=轮号）
+ */
+void send_big_round_progress(uint8_t step)
+{
+    set_order_context(1, step);
+
+    /* 每块板一条逻辑命令，各分配一个命令序号 */
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        send_board_order(SMALL_BOARD_ID_BASE + i, 0, ++board_cmd_seq[i]);
     }
 }
 
@@ -171,6 +219,8 @@ bool light_board_and_confirm(uint32_t board_id)
 {
     uint8_t idx = (uint8_t)(board_id - SMALL_BOARD_ID_BASE);
 
+    set_order_context(0, 0); // 小符命令
+
     /* 旧板/未知板无法回报“实际亮起”：冗余两帧发出后直接放行，
        由调用方后续的命中等待/超时逻辑兜底（等价于旧版行为） */
     if (!board_uses_new_proto(idx))
@@ -211,10 +261,12 @@ bool light_board_and_confirm(uint32_t board_id)
  * @param id2 第二块灯板 CAN 标准帧 ID
  * @retval true 等待/重发期间检测到双击，调用方应交由外层切换模式
  */
-bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2)
+bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2, uint8_t step)
 {
     uint8_t idx1 = (uint8_t)(id1 - SMALL_BOARD_ID_BASE);
     uint8_t idx2 = (uint8_t)(id2 - SMALL_BOARD_ID_BASE);
+
+    set_order_context(1, step); // 大符命令：带本轮轮号
 
     /* 只有新协议板才需要等“实际亮起”回报；旧板/未知板命令发出即视为完成 */
     bool wait1 = board_uses_new_proto(idx1);
@@ -285,6 +337,8 @@ bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2)
  */
 void all_small_boards_off(void)
 {
+    set_order_context(0, 0); // 熄灭命令按小符下发：灯板据此真正熄灯复位
+
     /* 全部熄灭后没有仍亮着的灯板 */
     memset(lit_board_mask, 0, sizeof(lit_board_mask));
 
