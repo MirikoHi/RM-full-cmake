@@ -36,6 +36,15 @@ static bool lit_board_mask[5] = {0};
 static uint8_t order_mode = 0;
 static uint8_t order_step = 0;
 
+/* 最近一轮大符抽中点亮的灯板，供换色补发时按原点亮/进度状态重发组合命令 */
+static uint32_t last_big_lit1 = 0;
+static uint32_t last_big_lit2 = 0;
+
+/* 供换色补发与组合命令确认重发使用的前置声明（定义位于本文件后文） */
+static void send_big_combined_frames(uint8_t step, uint32_t id1, uint32_t id2);
+static bool board_uses_new_proto(uint8_t idx);
+static bool board_reports_lit(uint32_t board_id);
+
 /**
  * @brief 设置后续命令帧的模式与轮号字段（字节5/字节7）
  */
@@ -97,22 +106,21 @@ void resend_light_to_lit_boards(void)
 {
     if (order_mode == 1)
     {
-        /* 大符：先给全部 5 块重发本轮进度，未抽中的板据此换色 */
-        send_big_round_progress(order_step);
+        /* 大符换色：按最近一轮的组合命令重发，仅刷新颜色，保持各板点亮/进度状态 */
+        send_big_combined_frames(order_step, last_big_lit1, last_big_lit2);
+        return;
     }
-    else
+
+    /* 小符：没点亮的板补一条熄灭命令，只为刷新常亮的 R 标 */
+    for (uint8_t i = 0; i < 5; i++)
     {
-        /* 小符：没点亮的板补一条熄灭命令，只为刷新常亮的 R 标 */
-        for (uint8_t i = 0; i < 5; i++)
+        if (!lit_board_mask[i])
         {
-            if (!lit_board_mask[i])
-            {
-                send_board_order(SMALL_BOARD_ID_BASE + i, 0, ++board_cmd_seq[i]);
-            }
+            send_board_order(SMALL_BOARD_ID_BASE + i, 0, ++board_cmd_seq[i]);
         }
     }
 
-    /* 亮着的板补发点亮命令（大符下就是被抽中的两块） */
+    /* 亮着的板补发点亮命令 */
     for (uint8_t i = 0; i < 5; i++)
     {
         if (lit_board_mask[i])
@@ -141,17 +149,79 @@ void send_celebration_twinkle(const uint16_t *board_ids, uint8_t mode)
 }
 
 /**
- * @brief 大符每轮开始：给全部 5 块灯板发“本轮进度”命令（mode=1, hitEnable=0, step=轮号）
+ * @brief 向全部 5 块灯板发“大符组合命令”：抽中的两块 hitEnable=1 亮起待击打，
+ *        其余 hitEnable=0 直接按 step 显示进度；每块冗余两帧抗丢帧。
+ *        记录最近抽中的两块，供换色补发。仅发送，不作亮起确认。
  */
-void send_big_round_progress(uint8_t step)
+static void send_big_combined_frames(uint8_t step, uint32_t id1, uint32_t id2)
 {
     set_order_context(1, step);
+    last_big_lit1 = id1;
+    last_big_lit2 = id2;
 
-    /* 每块板一条逻辑命令，各分配一个命令序号 */
     for (uint8_t i = 0; i < 5; i++)
     {
-        send_board_order(SMALL_BOARD_ID_BASE + i, 0, ++board_cmd_seq[i]);
+        uint32_t board_id = SMALL_BOARD_ID_BASE + i;
+        uint8_t lit = (board_id == id1 || board_id == id2) ? 1U : 0U;
+        uint8_t seq = ++board_cmd_seq[i];
+
+        send_board_order(board_id, lit, seq); // 组合帧 1
+        send_board_order(board_id, lit, seq); // 冗余帧 2（共用同一序号）
     }
+}
+
+/**
+ * @brief 大符每轮开始：发“组合命令”并等待两块抽中板回报亮起确认
+ *
+ * 进度和点亮合一，一轮只发一次；被击打板由灯板自驱熄灭并按 step 映射
+ * lighten_steps 显示，主控不再轮内单独发进度。未确认的板按新序号有界重发。
+ * @param id1 本轮抽中点亮的灯板 1
+ * @param id2 本轮抽中点亮的灯板 2
+ * @retval true 确认期间检测到双击，调用方应交由外层切换模式
+ */
+bool send_big_round_combined(uint8_t step, uint32_t id1, uint32_t id2)
+{
+    uint8_t idx1 = (uint8_t)(id1 - SMALL_BOARD_ID_BASE);
+    uint8_t idx2 = (uint8_t)(id2 - SMALL_BOARD_ID_BASE);
+
+    /* 只有新协议板才需要等“实际亮起”回报；旧板/未知板命令发出即视为放行 */
+    bool wait1 = board_uses_new_proto(idx1);
+    bool wait2 = board_uses_new_proto(idx2);
+    bool lit1 = !wait1;
+    bool lit2 = !wait2;
+
+    for (uint8_t attempt = 0; attempt < BOARD_LIGHT_CONFIRM_ATTEMPTS; attempt++)
+    {
+        send_big_combined_frames(step, id1, id2);
+
+        if (lit1 && lit2)
+        {
+            break;
+        }
+
+        uint32_t start = HAL_GetTick();
+        while ((HAL_GetTick() - start) < BOARD_LIGHT_CONFIRM_MS)
+        {
+            if (poll_mode_switch_keys())
+            {
+                return true; // 双击：切换模式
+            }
+            if (!lit1 && board_reports_lit(id1))
+            {
+                lit1 = true;
+            }
+            if (!lit2 && board_reports_lit(id2))
+            {
+                lit2 = true;
+            }
+            if (lit1 && lit2)
+            {
+                break;
+            }
+            HAL_Delay(1);
+        }
+    }
+    return false; // 多次重发仍未完全确认：交由命中等待/超时兜底
 }
 
 /**
@@ -248,88 +318,6 @@ bool light_board_and_confirm(uint32_t board_id)
         }
     }
     return false; // 多次重发仍未确认：交由命中等待/超时兜底
-}
-
-/**
- * @brief 点亮两块灯板并“并行”等待确认，未确认的板按新序号自动重发
- *
- * 大符模式要求两块灯板同时亮起，因此两块板的点亮命令必须在任何等待
- * 之前背靠背连续发出（两者实际间隔仅为 CAN 逐帧发送的亚毫秒级时间）。
- * 之后再并行等待各自回报“已亮起/已命中”：某一窗口内仍未确认的板，
- * 下一轮只对它重发，已确认的板不再打扰。
- * @param id1 第一块灯板 CAN 标准帧 ID
- * @param id2 第二块灯板 CAN 标准帧 ID
- * @retval true 等待/重发期间检测到双击，调用方应交由外层切换模式
- */
-bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2, uint8_t step)
-{
-    uint8_t idx1 = (uint8_t)(id1 - SMALL_BOARD_ID_BASE);
-    uint8_t idx2 = (uint8_t)(id2 - SMALL_BOARD_ID_BASE);
-
-    set_order_context(1, step); // 大符命令：带本轮轮号
-
-    /* 只有新协议板才需要等“实际亮起”回报；旧板/未知板命令发出即视为完成 */
-    bool wait1 = board_uses_new_proto(idx1);
-    bool wait2 = board_uses_new_proto(idx2);
-    bool lit1 = false;
-    bool lit2 = false;
-
-    for (uint8_t attempt = 0; attempt < BOARD_LIGHT_CONFIRM_ATTEMPTS; attempt++)
-    {
-        /* 关键：先给两块板都发点亮命令，再开始等待，保证两个灯同时亮起 */
-        if (!lit1)
-        {
-            send_board_light(id1); // 冗余两帧 + 新命令序号
-        }
-        if (!lit2)
-        {
-            send_board_light(id2);
-        }
-
-        /* 旧板/未知板不支持回报亮起状态：本轮命令已发出，即视为放行（不再重发） */
-        if (!wait1)
-        {
-            lit1 = true;
-        }
-        if (!wait2)
-        {
-            lit2 = true;
-        }
-
-        if (lit1 && lit2)
-        {
-            break; // 都不需要确认：两块命令已背靠背发出，立即放行
-        }
-
-        uint32_t start = HAL_GetTick();
-        while ((HAL_GetTick() - start) < BOARD_LIGHT_CONFIRM_MS)
-        {
-            if (poll_mode_switch_keys())
-            {
-                return true; // 双击：切换模式
-            }
-
-            if (!lit1 && board_reports_lit(id1))
-            {
-                lit1 = true;
-            }
-            if (!lit2 && board_reports_lit(id2))
-            {
-                lit2 = true;
-            }
-            if (lit1 && lit2)
-            {
-                break;
-            }
-            HAL_Delay(1);
-        }
-
-        if (lit1 && lit2)
-        {
-            break;
-        }
-    }
-    return false; // 多次重发仍未全部确认：交由命中等待/超时兜底
 }
 
 /**

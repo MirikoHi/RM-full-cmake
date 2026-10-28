@@ -68,20 +68,27 @@ static void update_outer_flags(void)
 }
 
 /**
- * @brief 切换大符/小符模式，切换前清理旧模式输出
+ * @brief 切换到指定大符/小符模式，切换前清理旧模式输出
+ * @param target 目标模式：TARGET_MODE_SMALL 或 TARGET_MODE_BIG
  */
-static void switch_target_mode(void)
+static void switch_target_mode(TargetMode_t target)
 {
+    /* 已经在目标模式：不做任何切换（避免清场/复位的副作用） */
+    if (target == current_mode)
+    {
+        return;
+    }
+
     /* 先熄灭全部灯板，避免切换后残留 */
     all_small_boards_off();
 
-    /* 双击切换模式后颜色恢复默认蓝色 */
+    /* 切换模式后颜色恢复默认蓝色 */
     canbox.TxData[2] = BLUE;
 
-    /* 丢弃残留的启动/复位请求，避免串扰到下一次进入大符 */
+    /* 丢弃残留的启动/复位/模式请求，避免串扰到下一次进入大符 */
     ext_ctrl_clear_big_requests();
 
-    if (current_mode == TARGET_MODE_SMALL)
+    if (target == TARGET_MODE_BIG)
     {
         current_mode = TARGET_MODE_BIG;
         reset_big_target_count(); // 重新进入大符模式时，连续成功轮数从 0 开始
@@ -208,7 +215,22 @@ void startup(void)
 
         if (switch_requested)
         {
-            switch_target_mode();
+            uint8_t ext_target = ext_ctrl_take_mode_target();
+            TargetMode_t target;
+            if (ext_target == EXT_MODE_SMALL)
+            {
+                target = TARGET_MODE_SMALL;
+            }
+            else if (ext_target == EXT_MODE_BIG)
+            {
+                target = TARGET_MODE_BIG;
+            }
+            else
+            {
+                /* EXT_MODE_TOGGLE：PC9 双击，取反切换 */
+                target = (current_mode == TARGET_MODE_SMALL) ? TARGET_MODE_BIG : TARGET_MODE_SMALL;
+            }
+            switch_target_mode(target);
         }
     }
 }

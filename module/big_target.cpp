@@ -56,23 +56,20 @@ BigRunResult_t run_big_target_once(void)
     uint8_t idx2 = second;
 
     /* 本轮轮号（0 起）= 本轮开始前已完成的连续成功轮数；
-       未抽中的板按它显示整体进度，抽中的板被打中后显示当前轮号 */
+       随本轮组合命令一起下发，抽中的板待击打，未抽中的板按它显示进度 */
     uint8_t step = big_success_rounds;
 
     /* 清空上一周期的命中反馈，避免残留数据影响新周期 */
     memset(canbox.RxData, 0, sizeof(canbox.RxData));
 
-    /* 先给 5 块板发本轮进度：未抽中的板显示进度，上一轮被抽中的板借此清掉命中锁存；
-       留出一个灯板主循环周期，免得灯板只读到后面的点亮命令 */
-    send_big_round_progress(step);
-    HAL_Delay(BOARD_CLEAR_SETTLE_MS);
-
-    /* 两块灯板的点亮命令先背靠背全部发出（间隔仅亚毫秒级），再并行等待
-       各自回报“已亮起/已命中”，保证两灯同时亮起；未确认的板自动重发 */
-    if (light_two_boards_and_confirm(id1, id2, step))
+    /* 一轮只发一次“组合命令”：同时携带本轮进度 step 与点亮信息，
+       抽中的两块板亮起待击打，其余板直接按 step 显示进度；
+       进度不再单独发送。命令含冗余帧，未亮起的板自动重发确认 */
+    if (send_big_round_combined(step, id1, id2))
     {
         return BIG_RUN_ABORTED; // 确认期间检测到双击/切模式/复位
     }
+    HAL_Delay(BOARD_CLEAR_SETTLE_MS);
 
     /* 基础刷新时间为 2.5s，首次命中后延长 1s 至 3.5s */
     uint32_t deadline = HAL_GetTick() + TARGET_LIGHT_ON_MS;
@@ -163,10 +160,15 @@ BigRunResult_t run_big_target_once(void)
         return BIG_RUN_COMPLETED; // 激活完成，等待外层回到未激活待机
     }
 
-    /* 本轮结束（两击提前结束或超时）：统一给 5 块板发一次新 step，
-       让所有板按本轮结果更新进度 */
-    send_big_round_progress(big_success_rounds);
+    /* 本轮结束（两击提前结束或超时）：熄灭全部灯板做视觉重置；
+       本轮成功结算出的 success 在下一轮组合命令中作为新 step 体现，
+       进度不再单独补发 */
+    all_small_boards_off();
 
-    /* 未达到庆祝轮数：不熄灭，直接进入下一轮 */
+    /* 全灭后停留一小段时间再进入下一轮，让"熄灭复位"的视觉停顿能被看到，
+       避免下一轮点亮命令立刻覆盖熄灭效果 */
+    HAL_Delay(BIG_ROUND_RESET_SETTLE_MS);
+
+    /* 未达到庆祝轮数：直接进入下一轮 */
     return BIG_RUN_CONTINUE; // 未达激活完成，外层继续下一轮
 }

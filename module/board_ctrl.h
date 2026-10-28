@@ -20,6 +20,9 @@
 /* 全灭后点亮下一批灯板前的等待时间：需大于灯板一个主循环周期(约 20ms+) */
 #define BOARD_CLEAR_SETTLE_MS 100
 
+/* 大符每轮结束全灭后、进入下一轮前的视觉复位停留时间，单位毫秒 */
+#define BIG_ROUND_RESET_SETTLE_MS 50
+
 /* 等待所有灯板反馈确认清场（在线/未命中/已熄灭/已执行最新命令）的兜底超时，防止某块板离线导致卡死 */
 #define BOARD_CLEAR_CONFIRM_TIMEOUT_MS 500
 
@@ -72,19 +75,19 @@ bool clear_all_boards_before_round(void);
 bool light_board_and_confirm(uint32_t board_id);
 
 /**
- * @brief 大符每轮开始：给全部 5 块灯板发“本轮进度”命令（mode=1, hitEnable=0, step=轮号）
+ * @brief 大符每轮开始：向全部 5 块灯板发“本轮组合命令”（mode=1, step=轮号）
  *
- * 未抽中的灯板据此显示整体激活进度；上一轮被抽中的灯板也借此清掉命中锁存，
- * 下一帧点亮命令到达时才会重新画“待击打”。
+ * 命令同时携带本轮进度与点亮信息：抽中的两块板 hitEnable=1 亮起待击打，
+ * 其余板 hitEnable=0 直接按 step 显示进度。每帧冗余两帧以抗丢帧。
+ * 进度只随这条组合命令下发，轮内不再单独发送进度；被击打的板由灯板自驱
+ * 熄灭并按 step 映射 lighten_steps 显示，同时上报命中反馈。
+ * 等待两块抽中板回报亮起确认，未确认按新序号有界重发。
+ *
  * @param step 本轮轮号，0 起（= 本轮开始前已完成的连续成功轮数）
+ * @param id1 本轮抽中点亮的灯板 1（其余板显示进度）
+ * @param id2 本轮抽中点亮的灯板 2
+ * @retval true 确认期间检测到双击，调用方应交由外层切换模式
  */
-void send_big_round_progress(uint8_t step);
-
-/**
- * @brief 同时点亮两块灯板并并行等待确认（大符模式），未确认按新序号有界重发
- * @param step 本轮轮号，随命令帧字节7下发，供灯板显示进度
- * @retval true 等待/重发期间检测到双击，调用方应交由外层切换模式
- */
-bool light_two_boards_and_confirm(uint32_t id1, uint32_t id2, uint8_t step);
+bool send_big_round_combined(uint8_t step, uint32_t id1, uint32_t id2);
 
 #endif /* __BOARD_CTRL_H__ */

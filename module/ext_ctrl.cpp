@@ -44,12 +44,19 @@ static uint32_t ext_status_last = 0;
 /* 未处理的大符启动/复位请求：仅大符模式下置位，由主流程取走 */
 static bool ext_big_start_pending = false;
 static bool ext_big_reset_pending = false;
+static uint8_t ext_mode_target = EXT_MODE_TOGGLE;
 
 /* 固定长度接收帧：AA 55 CMD CHK */
 static volatile uint8_t ext_rx_frame[EXT_FRAME_LEN];
 static volatile uint8_t ext_rx_index = 0;
 static volatile bool ext_switch_pending = false;
 static uint8_t ext_rx_tmp;
+
+/* 调试用：最近一次收到的命令字节（不筛选，校验失败也记录，新的覆盖旧的） */
+volatile uint8_t ext_last_rx_cmd = 0;
+volatile uint8_t ext_last_rx_chk = 0;
+volatile uint8_t ext_last_rx_expect = 0;
+volatile uint8_t ext_last_rx_ok = 0;
 
 /**
  * @brief 回一帧 ACK，供外接控制板确认命令已收到
@@ -78,14 +85,14 @@ static void ext_send_status(void)
  *
  * 闪烁庆祝期间与长按换色行为一致：命令被消费但不实际改色。
  */
-static void ext_apply_color_toggle(void)
+static void ext_apply_color_toggle(uint8_t color)
 {
     if (is_color_change_locked())
     {
         return;
     }
 
-    canbox.TxData[2] = (canbox.TxData[2] == BLUE) ? RED : BLUE;
+    canbox.TxData[2] = color;
     resend_light_to_lit_boards();
 }
 
@@ -97,13 +104,24 @@ static bool ext_handle_command(uint8_t cmd)
 {
     switch (cmd)
     {
-        case EXT_CMD_TOGGLE_MODE:
+        case EXT_CMD_SET_BIG:
             ext_send_ack(cmd);
+            ext_mode_target = EXT_MODE_BIG;
             return true;
 
-        case EXT_CMD_TOGGLE_COLOR:
+        case EXT_CMD_SET_SMALL:
             ext_send_ack(cmd);
-            ext_apply_color_toggle();
+            ext_mode_target = EXT_MODE_SMALL;
+            return true;
+
+        case EXT_CMD_SET_RED:
+            ext_send_ack(cmd);
+            ext_apply_color_toggle(RED);
+            break;
+
+        case EXT_CMD_SET_BLUE:
+            ext_send_ack(cmd);
+            ext_apply_color_toggle(BLUE);
             break;
 
         case EXT_CMD_START_BIG:
@@ -157,6 +175,13 @@ static void ext_feed_byte(uint8_t b)
 
     uint8_t cmd = ext_rx_frame[2];
     uint8_t expect = (uint8_t)(ext_rx_frame[0] + ext_rx_frame[1] + cmd);
+
+    /* 调试：记录最近一帧的命令、校验字节、期望值及是否通过 */
+    ext_last_rx_cmd = cmd;
+    ext_last_rx_chk = ext_rx_frame[3];
+    ext_last_rx_expect = expect;
+    ext_last_rx_ok = (ext_rx_frame[3] == expect) ? 1U : 0U;
+
     if (ext_rx_frame[3] == expect && ext_handle_command(cmd))
     {
         ext_switch_pending = true;
@@ -216,6 +241,13 @@ bool ext_ctrl_take_big_reset(void)
     return request;
 }
 
+uint8_t ext_ctrl_take_mode_target(void)
+{
+    uint8_t target = ext_mode_target;
+    ext_mode_target = EXT_MODE_TOGGLE;
+    return target;
+}
+
 /**
  * @brief 清空未处理的大符启动/复位请求（切换模式时丢弃残留请求）
  */
@@ -223,6 +255,7 @@ void ext_ctrl_clear_big_requests(void)
 {
     ext_big_start_pending = false;
     ext_big_reset_pending = false;
+    ext_mode_target = EXT_MODE_TOGGLE;
 }
 
 /**
@@ -236,6 +269,7 @@ void ext_ctrl_init(void)
     ext_status_last = 0;
     ext_big_start_pending = false;
     ext_big_reset_pending = false;
+    ext_mode_target = EXT_MODE_TOGGLE;
     HAL_UART_Receive_IT(&huart3, &ext_rx_tmp, 1);
 }
 
